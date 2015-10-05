@@ -9,7 +9,7 @@ class Mediator:
         self._publishers_by_topic = {}
         self._subscribers_by_topic = {}
 
-    def _notify_subscriber(self, topic, subscriber):
+    def _notify_subscriber(self, subscriber, topic):
         subscriber(topic)
 
     def get_published_data(self, *topics):
@@ -18,31 +18,39 @@ class Mediator:
             for topic in topics
         ])
 
-    def notify_subscribers(self, topic):
-        for subscriber in self._subscribers_by_topic.get(topic, []):
-            self._notify_subscriber(topic, subscriber)
+    def notify_subscribers(self, *topics):
+        for topic in topics:
+            for subscriber in self._subscribers_by_topic.get(topic, []):
+                self._notify_subscriber(subscriber, topic)
 
-    def publish(self, topic, publisher):
-        publishers = self._publishers_by_topic.setdefault(topic, [])
-        publishers.append(publisher)
-        self.notify_subscribers(topic)
+    def publish(self, publisher, *topics):
+        for topic in topics:
+            publishers = self._publishers_by_topic.setdefault(topic, [])
+            publishers.append(publisher)
+            self.notify_subscribers(topic)
 
-    def subscribe(self, topic, subscriber):
-        subscribers = self._subscribers_by_topic.setdefault(topic, [])
-        subscribers.append(subscriber)
-        self._notify_subscriber(topic, subscriber)
+    def subscribe(self, subscriber, *topics):
+        for topic in topics:
+            subscribers = self._subscribers_by_topic.setdefault(topic, [])
+            subscribers.append(subscriber)
+            self._notify_subscriber(subscriber, topic)
 
 class Value:
     def __init__(self, mediator, name):
         self._mediator = mediator
         self._name = name
-        mediator.publish(name, lambda topic: self)
+        self._published_topics = []
+        self.publish(name)
 
     def _notify_subscribers(self):
-        self._mediator.notify_subscribers(self._name)
+        self._mediator.notify_subscribers(*self._published_topics)
 
     def get_name(self):
         return self._name
+
+    def publish(self, *topics):
+        self._published_topics += topics
+        self._mediator.publish(lambda topic: self, *topics)
 
 class FixedValue(Value):
     def __init__(self, mediator, name, value=0):
@@ -59,38 +67,58 @@ class FixedValue(Value):
 class DynamicValue(Value):
     def __init__(self, mediator, name):
         super().__init__(mediator, name)
-        self._dependent_topics = []
-
-    def add_dependency(self, value):
-        self._dependent_topics.append(value.get_name())
-        self._mediator.subscribe(value.get_name(), lambda topic: self._notify_subscribers())
+        self._subscribed_topics = []
 
     def get_value(self):
         return functools.reduce(
             operator.add,
             [
                 value.get_value()
-                for value in self._mediator.get_published_data(*self._dependent_topics)
+                for value in self._mediator.get_published_data(*self._subscribed_topics)
             ],
             0
         )
 
+    def subscribe(self, *topics):
+        self._subscribed_topics += topics
+        self._mediator.subscribe(lambda topic: self._notify_subscribers(), *topics)
+
 if __name__ == '__main__':
+    def print_value(message, value):
+        print('[{}] {} = {}'.format(message, value.get_name(), value.get_value()))
+
     mediator = Mediator()
-    ability_base = FixedValue(mediator, 'ability_base', 14)
-    ability_adj = FixedValue(mediator, 'ability_adj', 2)
-    ability = DynamicValue(mediator, 'ability')
-    print('[initial] {} = {}'.format(ability.get_name(), ability.get_value()))
+    observer = lambda topic: [print_value('notification', value) for value in mediator.get_published_data(topic)]
 
-    mediator.subscribe(ability.get_name(), lambda topic: [
-        print('[notification] {} = {}'.format(value.get_name(), value.get_value()))
-        for value in mediator.get_published_data(topic)
-    ])
+    # Case 1: composite value subscribes to component values
+    astr_base = FixedValue(mediator, 'astr_base', 14)
+    astr_adj = FixedValue(mediator, 'astr_adj', 2)
+    astr = DynamicValue(mediator, 'astr')
+    print_value('initial', astr)
 
-    ability.add_dependency(ability_base)
-    ability.add_dependency(ability_adj)
+    mediator.subscribe(observer, astr.get_name())
 
-    ability_adj.set_value(-1)
-    ability_base.set_value(10)
+    astr.subscribe(astr_base.get_name())
+    astr.subscribe(astr_adj.get_name())
 
-    print('[final] {} = {}'.format(ability.get_name(), ability.get_value()))
+    astr_adj.set_value(-1)
+    astr_base.set_value(10)
+
+    print_value('final', astr)
+
+    # Case 2: component values publish to composite value
+    aint_base = FixedValue(mediator, 'aint_base', 12)
+    aint_adj = FixedValue(mediator, 'aint_adj', 1)
+    aint = DynamicValue(mediator, 'aint')
+    print_value('initial', aint)
+
+    mediator.subscribe(observer, aint.get_name())
+
+    aint.subscribe('aint_contrib')
+    aint_base.publish('aint_contrib')
+    aint_adj.publish('aint_contrib')
+
+    aint_adj.set_value(-1)
+    aint_base.set_value(10)
+
+    print_value('final', aint)
