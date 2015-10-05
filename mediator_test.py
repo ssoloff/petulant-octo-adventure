@@ -33,21 +33,21 @@ class Mediator:
         self._notify_subscriber(topic, subscriber)
 
 class Value:
-    def __init__(self, mediator, name, value=0):
+    def __init__(self, mediator, name):
         self._mediator = mediator
         self._name = name
-        self._value = value
-        mediator.publish(name, self)
-
-    def __call__(self, name):
-        assert name == self._name
-        return self
+        mediator.publish(name, lambda topic: self)
 
     def _notify_subscribers(self):
         self._mediator.notify_subscribers(self._name)
 
     def get_name(self):
         return self._name
+
+class FixedValue(Value):
+    def __init__(self, mediator, name, value=0):
+        super().__init__(mediator, name)
+        self._value = value
 
     def get_value(self):
         return self._value
@@ -56,32 +56,30 @@ class Value:
         self._value = value
         self._notify_subscribers()
 
-class ValueAggregator:
-    def __init__(self, mediator, target_value):
-        self._mediator = mediator
-        self._source_value_names = []
-        self._target_value = target_value
+class DynamicValue(Value):
+    def __init__(self, mediator, name):
+        super().__init__(mediator, name)
+        self._dependent_topics = []
 
-    def __call__(self, topic):
-        new_target_value = functools.reduce(
+    def add_dependency(self, value):
+        self._dependent_topics.append(value.get_name())
+        self._mediator.subscribe(value.get_name(), lambda topic: self._notify_subscribers())
+
+    def get_value(self):
+        return functools.reduce(
             operator.add,
             [
-                source_value.get_value()
-                for source_value in self._mediator.get_published_data(*self._source_value_names)
+                value.get_value()
+                for value in self._mediator.get_published_data(*self._dependent_topics)
             ],
             0
         )
-        self._target_value.set_value(new_target_value)
-
-    def add_source_value(self, value):
-        self._source_value_names.append(value.get_name())
-        self._mediator.subscribe(value.get_name(), self)
 
 if __name__ == '__main__':
     mediator = Mediator()
-    ability_base = Value(mediator, 'ability_base', 14)
-    ability_adj = Value(mediator, 'ability_adj', 2)
-    ability = Value(mediator, 'ability')
+    ability_base = FixedValue(mediator, 'ability_base', 14)
+    ability_adj = FixedValue(mediator, 'ability_adj', 2)
+    ability = DynamicValue(mediator, 'ability')
     print('[initial] {} = {}'.format(ability.get_name(), ability.get_value()))
 
     mediator.subscribe(ability.get_name(), lambda topic: [
@@ -89,9 +87,8 @@ if __name__ == '__main__':
         for value in mediator.get_published_data(topic)
     ])
 
-    ability_aggregator = ValueAggregator(mediator, ability)
-    ability_aggregator.add_source_value(ability_base)
-    ability_aggregator.add_source_value(ability_adj)
+    ability.add_dependency(ability_base)
+    ability.add_dependency(ability_adj)
 
     ability_adj.set_value(-1)
     ability_base.set_value(10)
