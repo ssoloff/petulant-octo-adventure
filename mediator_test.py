@@ -6,6 +6,16 @@ import re
 
 class Topic:
     @staticmethod
+    def is_match(topic_1, topic_or_topic_pattern_2):
+        assert Topic.is_topic(topic_1)
+        if Topic.is_topic(topic_or_topic_pattern_2):
+            topic_2 = topic_or_topic_pattern_2
+            return topic_2 == topic_1
+        else:
+            topic_pattern_2 = topic_or_topic_pattern_2
+            return topic_pattern_2.fullmatch(topic_1)
+
+    @staticmethod
     def is_topic(*topics_or_topic_patterns):
         for topic_or_topic_pattern in topics_or_topic_patterns:
             if not isinstance(topic_or_topic_pattern, str):
@@ -70,19 +80,12 @@ class Mediator:
             if topic_pattern.fullmatch(publisher_topic):
                 self._notify_subscriber_for_topic(subscriber, publisher_topic)
 
-    def _notify_subscribers_with_matching_topic(self, topic):
+    def _notify_subscribers(self, topic):
         assert Topic.is_topic(topic)
-        for subscriber in self._get_subscribers_for_topic_or_topic_pattern(topic, []):
-            self._notify_subscriber_for_topic(subscriber, topic)
-
-    def _notify_subscribers_with_matching_topic_pattern(self, topic):
-        assert Topic.is_topic(topic)
-        for topic_or_topic_pattern in self._get_all_subscriber_topics_or_topic_patterns():
-            if Topic.is_topic_pattern(topic_or_topic_pattern):
-                topic_pattern = topic_or_topic_pattern
-                if topic_pattern.fullmatch(topic):
-                    for subscriber in self._get_subscribers_for_topic_or_topic_pattern(topic_pattern):
-                        self._notify_subscriber_for_topic(subscriber, topic)
+        for subscriber_topic_or_topic_pattern in self._get_all_subscriber_topics_or_topic_patterns():
+            if Topic.is_match(topic, subscriber_topic_or_topic_pattern):
+                for subscriber in self._get_subscribers_for_topic_or_topic_pattern(subscriber_topic_or_topic_pattern):
+                    self._notify_subscriber_for_topic(subscriber, topic)
 
     def get_published_data(self, *topics_or_topic_patterns):
         data = []
@@ -99,13 +102,12 @@ class Mediator:
 
     def notify_subscribers(self, *topics):
         for topic in topics:
-            self._notify_subscribers_with_matching_topic(topic)
-            self._notify_subscribers_with_matching_topic_pattern(topic)
+            self._notify_subscribers(topic)
 
     def publish(self, publisher, *topics):
         for topic in topics:
             self._add_publisher(publisher, topic)
-            self.notify_subscribers(topic)
+            self._notify_subscribers(topic)
 
     def subscribe(self, subscriber, *topics_or_topic_patterns):
         for topic_or_topic_pattern in topics_or_topic_patterns:
