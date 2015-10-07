@@ -4,66 +4,113 @@ import functools
 import operator
 import re
 
+class Topic:
+    @staticmethod
+    def is_topic(*topics_or_topic_patterns):
+        for topic_or_topic_pattern in topics_or_topic_patterns:
+            if not isinstance(topic_or_topic_pattern, str):
+                return False
+        return True
+
+    @staticmethod
+    def is_topic_pattern(*topics_or_topic_patterns):
+        return not Topic.is_topic(*topics_or_topic_patterns)
+
 class Mediator:
     def __init__(self):
         self._publishers_by_topic = {}
-        self._subscribers_by_topic = {}
+        self._subscribers_by_topic_or_topic_pattern = {}
+
+    def _add_publisher(self, publisher, topic):
+        assert Topic.is_topic(topic)
+        publishers = self._get_publishers_for_topic(topic, create_if_absent=True)
+        publishers.append(publisher)
+
+    def _add_subscriber(self, subscriber, topic_or_topic_pattern):
+        subscribers = self._get_subscribers_for_topic_or_topic_pattern(topic_or_topic_pattern, create_if_absent=True)
+        subscribers.append(subscriber)
+
+    def _get_all_publisher_topics(self):
+        return self._publishers_by_topic.keys()
+
+    def _get_all_subscriber_topics_or_topic_patterns(self):
+        return self._subscribers_by_topic_or_topic_pattern.keys()
 
     def _get_published_data(self, topic):
-        assert isinstance(topic, str)
-        return [publisher(topic) for publisher in self._publishers_by_topic.get(topic, [])]
+        assert Topic.is_topic(topic)
+        return [publisher(topic) for publisher in self._get_publishers_for_topic(topic)]
 
-    def _notify_subscriber(self, subscriber, topic):
-        assert isinstance(topic, str)
+    def _get_publishers_for_topic(self, topic, create_if_absent=False):
+        if create_if_absent:
+            return self._publishers_by_topic.setdefault(topic, [])
+        else:
+            return self._publishers_by_topic.get(topic, [])
+
+    def _get_subscribers_for_topic_or_topic_pattern(self, topic_or_topic_pattern, create_if_absent=False):
+        if create_if_absent:
+            return self._subscribers_by_topic_or_topic_pattern.setdefault(topic_or_topic_pattern, [])
+        else:
+            return self._subscribers_by_topic_or_topic_pattern.get(topic_or_topic_pattern, [])
+
+    def _notify_subscriber(self, subscriber, topic_or_topic_pattern):
+        if Topic.is_topic(topic_or_topic_pattern):
+            topic = topic_or_topic_pattern
+            self._notify_subscriber_for_topic(subscriber, topic)
+        else:
+            topic_pattern = topic_or_topic_pattern
+            self._notify_subscriber_for_topic_pattern(subscriber, topic_pattern)
+
+    def _notify_subscriber_for_topic(self, subscriber, topic):
+        assert Topic.is_topic(topic)
         subscriber(topic)
 
-    def _notify_subscribers_with_topic(self, topic):
-        assert isinstance(topic, str)
-        for subscriber in self._subscribers_by_topic.get(topic, []):
-            self._notify_subscriber(subscriber, topic)
+    def _notify_subscriber_for_topic_pattern(self, subscriber, topic_pattern):
+        assert Topic.is_topic_pattern(topic_pattern)
+        for publisher_topic in self._get_all_publisher_topics():
+            if topic_pattern.fullmatch(publisher_topic):
+                self._notify_subscriber_for_topic(subscriber, publisher_topic)
 
-    def _notify_subscribers_with_topic_pattern(self, topic):
-        assert isinstance(topic, str)
-        for topic_pattern in self._subscribers_by_topic.keys():
-            if not isinstance(topic_pattern, str):
+    def _notify_subscribers_with_matching_topic(self, topic):
+        assert Topic.is_topic(topic)
+        for subscriber in self._get_subscribers_for_topic_or_topic_pattern(topic, []):
+            self._notify_subscriber_for_topic(subscriber, topic)
+
+    def _notify_subscribers_with_matching_topic_pattern(self, topic):
+        assert Topic.is_topic(topic)
+        for topic_or_topic_pattern in self._get_all_subscriber_topics_or_topic_patterns():
+            if Topic.is_topic_pattern(topic_or_topic_pattern):
+                topic_pattern = topic_or_topic_pattern
                 if topic_pattern.fullmatch(topic):
-                    for subscriber in self._subscribers_by_topic[topic_pattern]:
-                        self._notify_subscriber(subscriber, topic)
+                    for subscriber in self._get_subscribers_for_topic_or_topic_pattern(topic_pattern):
+                        self._notify_subscriber_for_topic(subscriber, topic)
 
-    def get_published_data(self, *topics):
+    def get_published_data(self, *topics_or_topic_patterns):
         data = []
-        for topic in topics:
-            if isinstance(topic, str):
+        for topic_or_topic_pattern in topics_or_topic_patterns:
+            if Topic.is_topic(topic_or_topic_pattern):
+                topic = topic_or_topic_pattern
                 data.extend(self._get_published_data(topic))
             else:
-                for publisher_topic in self._publishers_by_topic.keys():
-                    if topic.fullmatch(publisher_topic):
+                topic_pattern = topic_or_topic_pattern
+                for publisher_topic in self._get_all_publisher_topics():
+                    if topic_pattern.fullmatch(publisher_topic):
                         data.extend(self._get_published_data(publisher_topic))
         return data
 
     def notify_subscribers(self, *topics):
         for topic in topics:
-            assert isinstance(topic, str)
-            self._notify_subscribers_with_topic(topic)
-            self._notify_subscribers_with_topic_pattern(topic)
+            self._notify_subscribers_with_matching_topic(topic)
+            self._notify_subscribers_with_matching_topic_pattern(topic)
 
     def publish(self, publisher, *topics):
         for topic in topics:
-            assert isinstance(topic, str)
-            publishers = self._publishers_by_topic.setdefault(topic, [])
-            publishers.append(publisher)
+            self._add_publisher(publisher, topic)
             self.notify_subscribers(topic)
 
-    def subscribe(self, subscriber, *topics):
-        for topic in topics:
-            subscribers = self._subscribers_by_topic.setdefault(topic, [])
-            subscribers.append(subscriber)
-            if isinstance(topic, str):
-                self._notify_subscriber(subscriber, topic)
-            else:
-                for publisher_topic in self._publishers_by_topic.keys():
-                    if topic.fullmatch(publisher_topic):
-                        self._notify_subscriber(subscriber, publisher_topic)
+    def subscribe(self, subscriber, *topics_or_topic_patterns):
+        for topic_or_topic_pattern in topics_or_topic_patterns:
+            self._add_subscriber(subscriber, topic_or_topic_pattern)
+            self._notify_subscriber(subscriber, topic_or_topic_pattern)
 
 class Value:
     def __init__(self, mediator, name):
@@ -78,6 +125,7 @@ class Value:
         return self._name
 
     def publish(self, *topics):
+        assert Topic.is_topic(*topics)
         self._published_topics += topics
         self._mediator.publish(lambda topic: self, *topics)
 
@@ -96,21 +144,21 @@ class StaticValue(Value):
 class DynamicValue(Value):
     def __init__(self, mediator, name):
         super().__init__(mediator, name)
-        self._subscribed_topics = []
+        self._subscribed_topics_or_topic_patterns = []
+
+    def _get_subscribed_values(self):
+        return self._mediator.get_published_data(*self._subscribed_topics_or_topic_patterns)
 
     def get_value(self):
         return functools.reduce(
             operator.add,
-            [
-                value.get_value()
-                for value in self._mediator.get_published_data(*self._subscribed_topics)
-            ],
+            [value.get_value() for value in self._get_subscribed_values()],
             0
         )
 
-    def subscribe(self, *topics):
-        self._subscribed_topics += topics
-        self._mediator.subscribe(lambda topic: self._notify_subscribers(), *topics)
+    def subscribe(self, *topics_or_topic_patterns):
+        self._subscribed_topics_or_topic_patterns += topics_or_topic_patterns
+        self._mediator.subscribe(lambda topic: self._notify_subscribers(), *topics_or_topic_patterns)
 
 class ValueFactory:
     def __init__(self, mediator):
