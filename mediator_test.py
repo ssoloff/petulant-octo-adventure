@@ -1,137 +1,100 @@
 #!/usr/bin/env python3
 
 import functools
+import itertools
 import operator
 import re
 
-class Topic:
-    @staticmethod
-    def is_match(topic_1, topic_or_topic_pattern_2):
-        assert Topic.is_topic(topic_1)
-        if Topic.is_topic(topic_or_topic_pattern_2):
-            topic_2 = topic_or_topic_pattern_2
-            return topic_2 == topic_1
-        else:
-            topic_pattern_2 = topic_or_topic_pattern_2
-            return topic_pattern_2.fullmatch(topic_1)
+class _Topic:
+    def __init__(self, mediator):
+        self._mediator = mediator
+
+    def _get_published_data_for_topic(self, topic):
+        return [publisher(topic) for publisher in self._mediator._get_publishers_for_topic(topic)]
+
+    def _notify_subscribers_for_topic(self, subscribers, topic):
+        assert _Topic.is_single_topic(topic)
+        for subscriber in subscribers:
+            subscriber(topic)
 
     @staticmethod
-    def is_topic(*topics_or_topic_patterns):
-        for topic_or_topic_pattern in topics_or_topic_patterns:
-            if not isinstance(topic_or_topic_pattern, str):
-                return False
-        return True
+    def is_multi_topic(*topics):
+        return all(map(lambda topic: isinstance(topic, _MultiTopic), topics))
 
     @staticmethod
-    def is_topic_pattern(*topics_or_topic_patterns):
-        return not Topic.is_topic(*topics_or_topic_patterns)
+    def is_single_topic(*topics):
+        return all(map(lambda topic: isinstance(topic, _SingleTopic), topics))
 
-class Mediator:
-    def __init__(self):
-        self._publishers_by_topic = {}
-        self._subscribers_by_topic_or_topic_pattern = {}
+class _SingleTopic(_Topic):
+    def __init__(self, mediator, name):
+        super().__init__(mediator)
+        self._name = name
 
-    def _add_publisher(self, publisher, topic):
-        assert Topic.is_topic(topic)
-        publishers = self._get_publishers_for_topic(topic, create_if_absent=True)
-        publishers.append(publisher)
+    def __eq__(self, other):
+        return self._name == other._name
 
-    def _add_subscriber(self, subscriber, topic_or_topic_pattern):
-        subscribers = self._get_subscribers_for_topic_or_topic_pattern(topic_or_topic_pattern, create_if_absent=True)
-        subscribers.append(subscriber)
+    def __hash__(self):
+        return hash(self._name)
 
-    def _get_all_publisher_topics(self):
-        return self._publishers_by_topic.keys()
+    def __repr__(self):
+        return 'SingleTopic[{}]'.format(self._name)
 
-    def _get_all_subscriber_topics_or_topic_patterns(self):
-        return self._subscribers_by_topic_or_topic_pattern.keys()
+    def get_published_data(self):
+        return self._get_published_data_for_topic(self)
 
-    def _get_published_data(self, topic):
-        assert Topic.is_topic(topic)
-        return [publisher(topic) for publisher in self._get_publishers_for_topic(topic)]
+    def matches(self, topic):
+        return self._name == topic._name
 
-    def _get_publishers_for_topic(self, topic, create_if_absent=False):
-        if create_if_absent:
-            return self._publishers_by_topic.setdefault(topic, [])
-        else:
-            return self._publishers_by_topic.get(topic, [])
+    def notify_subscribers(self, *subscribers):
+        self._notify_subscribers_for_topic(subscribers, self)
 
-    def _get_subscribers_for_topic_or_topic_pattern(self, topic_or_topic_pattern, create_if_absent=False):
-        if create_if_absent:
-            return self._subscribers_by_topic_or_topic_pattern.setdefault(topic_or_topic_pattern, [])
-        else:
-            return self._subscribers_by_topic_or_topic_pattern.get(topic_or_topic_pattern, [])
+class _MultiTopic(_Topic):
+    def __init__(self, mediator, name_pattern):
+        super().__init__(mediator)
+        self._name_pattern = name_pattern
 
-    def _notify_subscriber(self, subscriber, topic_or_topic_pattern):
-        if Topic.is_topic(topic_or_topic_pattern):
-            topic = topic_or_topic_pattern
-            self._notify_subscriber_for_topic(subscriber, topic)
-        else:
-            topic_pattern = topic_or_topic_pattern
-            self._notify_subscriber_for_topic_pattern(subscriber, topic_pattern)
+    def __eq__(self, other):
+        return self._name_pattern == other._name_pattern
 
-    def _notify_subscriber_for_topic(self, subscriber, topic):
-        assert Topic.is_topic(topic)
-        subscriber(topic)
+    def __hash__(self):
+        return hash(self._name_pattern)
 
-    def _notify_subscriber_for_topic_pattern(self, subscriber, topic_pattern):
-        assert Topic.is_topic_pattern(topic_pattern)
-        for publisher_topic in self._get_all_publisher_topics():
-            if topic_pattern.fullmatch(publisher_topic):
-                self._notify_subscriber_for_topic(subscriber, publisher_topic)
+    def __repr__(self):
+        return 'MultiTopic[{}]'.format(self._name_pattern)
 
-    def _notify_subscribers(self, topic):
-        assert Topic.is_topic(topic)
-        for subscriber_topic_or_topic_pattern in self._get_all_subscriber_topics_or_topic_patterns():
-            if Topic.is_match(topic, subscriber_topic_or_topic_pattern):
-                for subscriber in self._get_subscribers_for_topic_or_topic_pattern(subscriber_topic_or_topic_pattern):
-                    self._notify_subscriber_for_topic(subscriber, topic)
+    def get_published_data(self):
+        return itertools.chain.from_iterable(
+            self._get_published_data_for_topic(publisher_topic)
+            for publisher_topic in self._mediator._get_all_publisher_topics()
+            if self._name_pattern.fullmatch(publisher_topic._name)
+        )
 
-    def get_published_data(self, *topics_or_topic_patterns):
-        data = []
-        for topic_or_topic_pattern in topics_or_topic_patterns:
-            if Topic.is_topic(topic_or_topic_pattern):
-                topic = topic_or_topic_pattern
-                data.extend(self._get_published_data(topic))
-            else:
-                topic_pattern = topic_or_topic_pattern
-                for publisher_topic in self._get_all_publisher_topics():
-                    if topic_pattern.fullmatch(publisher_topic):
-                        data.extend(self._get_published_data(publisher_topic))
-        return data
+    def matches(self, topic):
+        return self._name_pattern.fullmatch(topic._name)
 
-    def notify_subscribers(self, *topics):
-        for topic in topics:
-            self._notify_subscribers(topic)
+    def notify_subscribers(self, *subscribers):
+        for publisher_topic in self._mediator._get_all_publisher_topics():
+            if self._name_pattern.fullmatch(publisher_topic._name):
+                self._notify_subscribers_for_topic(subscribers, publisher_topic)
 
-    def publish(self, publisher, *topics):
-        for topic in topics:
-            self._add_publisher(publisher, topic)
-            self._notify_subscribers(topic)
-
-    def subscribe(self, subscriber, *topics_or_topic_patterns):
-        for topic_or_topic_pattern in topics_or_topic_patterns:
-            self._add_subscriber(subscriber, topic_or_topic_pattern)
-            self._notify_subscriber(subscriber, topic_or_topic_pattern)
-
-class Value:
+class _Value:
     def __init__(self, mediator, name):
         self._mediator = mediator
-        self._name = name
         self._published_topics = []
+        self._topic = mediator.new_single_topic(name)
 
     def _notify_subscribers(self):
         self._mediator.notify_subscribers(*self._published_topics)
 
-    def get_name(self):
-        return self._name
+    def get_topic(self):
+        return self._topic
 
     def publish(self, *topics):
-        assert Topic.is_topic(*topics)
+        assert _Topic.is_single_topic(*topics)
         self._published_topics += topics
         self._mediator.publish(lambda topic: self, *topics)
 
-class StaticValue(Value):
+class _StaticValue(_Value):
     def __init__(self, mediator, name, value):
         super().__init__(mediator, name)
         self._value = value
@@ -143,13 +106,13 @@ class StaticValue(Value):
         self._value = value
         self._notify_subscribers()
 
-class DynamicValue(Value):
+class _DynamicValue(_Value):
     def __init__(self, mediator, name):
         super().__init__(mediator, name)
-        self._subscribed_topics_or_topic_patterns = []
+        self._subscribed_topics = []
 
     def _get_subscribed_values(self):
-        return self._mediator.get_published_data(*self._subscribed_topics_or_topic_patterns)
+        return self._mediator.get_published_data(*self._subscribed_topics)
 
     def get_value(self):
         return functools.reduce(
@@ -158,27 +121,87 @@ class DynamicValue(Value):
             0
         )
 
-    def subscribe(self, *topics_or_topic_patterns):
-        self._subscribed_topics_or_topic_patterns += topics_or_topic_patterns
-        self._mediator.subscribe(lambda topic: self._notify_subscribers(), *topics_or_topic_patterns)
+    def subscribe(self, *topics):
+        self._subscribed_topics += topics
+        self._mediator.subscribe(lambda topic: self._notify_subscribers(), *topics)
 
-class ValueFactory:
-    def __init__(self, mediator):
-        self._mediator = mediator
+class Mediator:
+    def __init__(self):
+        self._publishers_by_topic = {}
+        self._subscribers_by_topic = {}
 
-    def new_dynamic(self, name):
-        value = DynamicValue(self._mediator, name)
-        value.publish(name)
+    def _add_publisher(self, publisher, topic):
+        assert _Topic.is_single_topic(topic)
+        publishers = self._get_publishers_for_topic(topic, create_if_absent=True)
+        publishers.append(publisher)
+
+    def _add_subscriber(self, subscriber, topic):
+        subscribers = self._get_subscribers_for_topic(topic, create_if_absent=True)
+        subscribers.append(subscriber)
+
+    def _get_all_publisher_topics(self):
+        return self._publishers_by_topic.keys()
+
+    def _get_all_subscriber_topics(self):
+        return self._subscribers_by_topic.keys()
+
+    def _get_publishers_for_topic(self, topic, create_if_absent=False):
+        assert _Topic.is_single_topic(topic)
+        if create_if_absent:
+            return self._publishers_by_topic.setdefault(topic, [])
+        else:
+            return self._publishers_by_topic.get(topic, [])
+
+    def _get_subscribers_for_topic(self, topic, create_if_absent=False):
+        if create_if_absent:
+            return self._subscribers_by_topic.setdefault(topic, [])
+        else:
+            return self._subscribers_by_topic.get(topic, [])
+
+    def _notify_subscribers(self, topic):
+        assert _Topic.is_single_topic(topic)
+        for subscriber_topic in self._get_all_subscriber_topics():
+            if subscriber_topic.matches(topic):
+                topic.notify_subscribers(*self._get_subscribers_for_topic(subscriber_topic))
+
+    def get_published_data(self, *topics):
+        return itertools.chain.from_iterable([
+            topic.get_published_data() for topic in topics
+        ])
+
+    def new_dynamic_value(self, name):
+        value = _DynamicValue(self, name)
+        value.publish(value.get_topic())
         return value
 
-    def new_static(self, name, value=0):
-        value = StaticValue(self._mediator, name, value)
-        value.publish(name)
+    def new_multi_topic(self, name_pattern):
+        return _MultiTopic(self, name_pattern)
+
+    def new_single_topic(self, name):
+        return _SingleTopic(self, name)
+
+    def new_static_value(self, name, value=0):
+        value = _StaticValue(self, name, value)
+        value.publish(value.get_topic())
         return value
+
+    def notify_subscribers(self, *topics):
+        for topic in topics:
+            self._notify_subscribers(topic)
+
+    def publish(self, publisher, *topics):
+        for topic in topics:
+            self._add_publisher(publisher, topic)
+            self._notify_subscribers(topic)
+
+    def subscribe(self, subscriber, *topics):
+        for topic in topics:
+            self._add_subscriber(subscriber, topic)
+            topic.notify_subscribers(subscriber)
 
 if __name__ == '__main__':
     def print_value(message, value):
-        print('[{}] {} = {}'.format(message, value.get_name(), value.get_value()))
+        print('[{}] {} = {}'.format(message, value.get_topic(), value.get_value()))
 
     mediator = Mediator()
     mediator.subscribe(
@@ -186,19 +209,17 @@ if __name__ == '__main__':
             print_value('notification', value)
             for value in mediator.get_published_data(topic)
         ],
-        re.compile('astr|aint|adex')
+        mediator.new_multi_topic(re.compile('astr|aint|adex'))
     )
 
-    value_factory = ValueFactory(mediator)
-
     # Case 1: composite value subscribes to component values
-    astr_base = value_factory.new_static('astr_base', 14)
-    astr_adj = value_factory.new_static('astr_adj', 2)
-    astr = value_factory.new_dynamic('astr')
+    astr_base = mediator.new_static_value('astr_base', 14)
+    astr_adj = mediator.new_static_value('astr_adj', 2)
+    astr = mediator.new_dynamic_value('astr')
     print_value('initial', astr)
 
-    astr.subscribe(astr_base.get_name())
-    astr.subscribe(astr_adj.get_name())
+    astr.subscribe(astr_base.get_topic())
+    astr.subscribe(astr_adj.get_topic())
 
     astr_adj.set_value(-1)
     astr_base.set_value(10)
@@ -206,14 +227,15 @@ if __name__ == '__main__':
     print_value('final', astr)
 
     # Case 2: component values publish to composite value
-    aint_base = value_factory.new_static('aint_base', 12)
-    aint_adj = value_factory.new_static('aint_adj', 1)
-    aint = value_factory.new_dynamic('aint')
+    aint_base = mediator.new_static_value('aint_base', 12)
+    aint_adj = mediator.new_static_value('aint_adj', 1)
+    aint = mediator.new_dynamic_value('aint')
     print_value('initial', aint)
 
-    aint.subscribe('aint_contrib')
-    aint_base.publish('aint_contrib')
-    aint_adj.publish('aint_contrib')
+    aint_contrib_topic = mediator.new_single_topic('aint_contrib')
+    aint.subscribe(aint_contrib_topic)
+    aint_base.publish(aint_contrib_topic)
+    aint_adj.publish(aint_contrib_topic)
 
     aint_adj.set_value(-3)
     aint_base.set_value(8)
@@ -221,12 +243,12 @@ if __name__ == '__main__':
     print_value('final', aint)
 
     # Case 3: composite value subscribes to pattern; component values publish to topics that match pattern
-    adex_base = value_factory.new_static('adex_base', 13)
-    adex_adj = value_factory.new_static('adex_adj', 3)
-    adex = value_factory.new_dynamic('adex')
+    adex_base = mediator.new_static_value('adex_base', 13)
+    adex_adj = mediator.new_static_value('adex_adj', 3)
+    adex = mediator.new_dynamic_value('adex')
     print_value('initial', adex)
 
-    adex.subscribe(re.compile('adex_.+'))
+    adex.subscribe(mediator.new_multi_topic(re.compile('adex_.+')))
 
     adex_adj.set_value(-2)
     adex_base.set_value(9)
