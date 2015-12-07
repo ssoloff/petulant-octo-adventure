@@ -127,6 +127,7 @@ class _DynamicValue(_Value):
 
 class Mediator:
     def __init__(self):
+        self._observers = []
         self._publishers_by_topic = {}
         self._subscribers_by_topic = {}
 
@@ -134,10 +135,12 @@ class Mediator:
         assert _Topic.is_single_topic(topic)
         publishers = self._get_publishers_for_topic(topic, create_if_absent=True)
         publishers.append(publisher)
+        self._notify_observers_that_publisher_added(publisher, topic)
 
     def _add_subscriber(self, subscriber, topic):
         subscribers = self._get_subscribers_for_topic(topic, create_if_absent=True)
         subscribers.append(subscriber)
+        self._notify_observers_that_subscriber_added(subscriber, topic)
 
     def _get_all_publisher_topics(self):
         return self._publishers_by_topic.keys()
@@ -158,11 +161,28 @@ class Mediator:
         else:
             return self._subscribers_by_topic.get(topic, [])
 
+    def _notify_observers(self, action):
+        for observer in self._observers:
+            action(observer)
+
+    def _notify_observers_that_publisher_added(self, publisher, topic):
+        self._notify_observers(lambda observer: observer.publisher_added(publisher, topic))
+
+    def _notify_observers_that_subscriber_added(self, subscriber, topic):
+        self._notify_observers(lambda observer: observer.subscriber_added(subscriber, topic))
+
+    def _notify_observers_that_topic_published(self, topic):
+        self._notify_observers(lambda observer: observer.topic_published(topic))
+
     def _notify_subscribers(self, topic):
         assert _Topic.is_single_topic(topic)
+        self._notify_observers_that_topic_published(topic)
         for subscriber_topic in self._get_all_subscriber_topics():
             if subscriber_topic.matches(topic):
                 topic.notify_subscribers(*self._get_subscribers_for_topic(subscriber_topic))
+
+    def add_observer(self, observer):
+        self._observers.append(observer)
 
     def get_published_data(self, *topics):
         return itertools.chain.from_iterable([
@@ -200,6 +220,16 @@ class Mediator:
             topic.notify_subscribers(subscriber)
 
 if __name__ == '__main__':
+    class Observer:
+        def publisher_added(self, publisher, topic):
+            print('[observer] added publisher "{}" for topic "{}"'.format(publisher, topic))
+
+        def subscriber_added(self, subscriber, topic):
+            print('[observer] added subscriber "{}" for topic "{}"'.format(subscriber, topic))
+
+        def topic_published(self, topic):
+            print('[observer] topic "{}" published'.format(topic))
+
     def print_value(message, value):
         print('[{}] {} = {}'.format(message, value.get_topic(), value.get_value()))
 
@@ -211,6 +241,9 @@ if __name__ == '__main__':
         ],
         mediator.new_multi_topic(re.compile('astr|aint|adex'))
     )
+
+    # uncomment the following line to enable verbose Mediator logging
+    #mediator.add_observer(Observer())
 
     # Case 1: composite value subscribes to component values
     astr_base = mediator.new_static_value('astr_base', 14)
